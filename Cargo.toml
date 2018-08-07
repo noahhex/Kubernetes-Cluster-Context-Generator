@@ -7,3 +7,4 @@ authors = ["Noah <turing.thesis@gmail.com>"]
 colored = "1.6.1"
 failure = "0.1.2"
 rust-s3 = "0.9.2"
+openssl = "0.10.11"
