@@ -1,3 +1,5 @@
+extern crate reqwest;
+
 extern crate openssl;
 
 use openssl::asn1::Asn1Time;
@@ -24,18 +26,19 @@ use s3::credentials::Credentials;
 
 
 use std::io::prelude::*;
-use std::fs::File;
+use std::fs::{self, DirBuilder, File};
 use std::str;
 use std::process::Command;
-use std::env::{args, home_dir};
+use std::env::{args, home_dir, set_var};
 use std::collections::HashMap;
 
 const REGION: &str = "";
 const BUCKET: &str = "";
+const AWS_KEY: &str = "";
+const AWS_SECRET: &str = "";
 
 
-
-fn get_ca_from_s3(home: &str) -> Result<(), Error> {
+fn get_ca_from_s3(home: &str) -> Result<(), std::io::Error> {
 	let credentials = Credentials::new(Some(String::from(""))
 	,Some(String::from("")),None,None);
 
@@ -45,12 +48,12 @@ fn get_ca_from_s3(home: &str) -> Result<(), Error> {
 	let bucket = Bucket::new(BUCKET, region, credentials);
 
 	let (data, code) = bucket.get("cluster-1.citizenhex-sandbox.co.uk/pki/issued/ca/6584084891014744288690932805.crt").unwrap();
-	let mut crt = File::create(&first_arg)?;
-	crt.write(&data)?;
+	let mut crt = File::create(&first_arg).unwrap();
+	crt.write(&data).unwrap();
 
 	let (data, code) = bucket.get("cluster-1.citizenhex-sandbox.co.uk/pki/private/ca/6584084891014744288690932805.key").unwrap();
-	let mut key = File::create(&second_arg)?;
-	key.write(&data)?;
+	let mut key = File::create(&second_arg).unwrap();
+	key.write(&data).unwrap();
 
 	Ok(())
 }
@@ -58,16 +61,75 @@ fn get_ca_from_s3(home: &str) -> Result<(), Error> {
 
 fn setup_home(home: &str) -> Result<(),()> {
 	let tmp_home = home;
-	let first_arg = format!(" {}/.certs/Citizen Hex/", tmp_home);
-	let second_arg = format!(" {}/.certs/kubernetes/pki/", tmp_home);
-
+	let first_arg = format!("{}/.certs/Citizen Hex/", tmp_home);
+	let second_arg = format!("{}/.certs/kubernetes/pki/", tmp_home);
+	Command::new("mkdir")
+				.args(&["-p", &first_arg])
+				.spawn()
+				.unwrap();
+					
+	Command::new("mkdir")
+				.args(&["-p", &second_arg])
+				.spawn()
+				.unwrap();
+					
 	Ok(())
 }
 
+fn setup_kubernetes_context(name: &str, home: &str)  {
+	set_var("AWS_ACCESS_KEY_ID","");
+	set_var("AWS_SECRET_ACCESS_KEY", "");
+	set_var("NAME","");
+	set_var("KOPS_STATE_STORE", "");
 
-fn gen_ssl_cert(name: &str,home: &str) -> Result<(), Error> {
-	let users: HashMap<&str,&str> = [("ben","auditor"),("brett","auditor"),("noah","admin"),
-	("will","dev"),("rohit","dev"),("david","dev")].iter().cloned().collect();
+	let mut f = File::create("./kubectl").unwrap();
+	reqwest::get("https://storage.googleapis.com/kubernetes-release/release/v1.8.11/bin/linux/amd64/kubectl")
+			.unwrap().copy_to(&mut f).unwrap();
+
+	let mut fd = File::create("./kops").unwrap();
+	reqwest::get("https://github.com/kubernetes/kops/releases/download/1.9.2/kops-linux-amd64")
+			.unwrap().copy_to(&mut fd).unwrap();
+			
+	Command::new("chmod")
+				.args(&["+x", "./kubectl"])
+				.spawn()
+				.unwrap();
+
+	Command::new("chmod")
+				.args(&["+x", "./kops"])
+				.spawn()
+				.unwrap();
+}
+
+fn secondary_kube_setup(name: &str, home: &str) {
+	let crt_arg = format!("{}/.certs/Citizen Hex/employee-{}.crt", home, name);
+	let key_arg = format!("{}/.certs/Citizen Hex/employee-{}.key", home, name);
+
+		Command::new("./kops")
+					.args(&["export", "kubecfg", "cluster-1.citizenhex-sandbox.co.uk"])
+					.spawn()
+					.unwrap();
+	
+		Command::new("./kubectl")
+					.args(&["config", "set-credentials", name, "--client-certificate", &crt_arg,  "--client-key", &key_arg])
+					.spawn()
+					.unwrap();
+	
+		Command::new("./kubectl")
+					.args(&["config", "set-context", name, "--cluster", "cluster-1.citizenhex-sandbox.co.uk", "--namespace=*", "--user", name])
+					.spawn()
+					.unwrap();
+
+		Command::new("./kubectl")
+					.args(&["config", "use-context", name])
+					.spawn()
+					.unwrap();
+				
+}
+
+fn gen_ssl_cert(name: &str,home: &str) -> Result<(), std::io::Error> {
+	let users: HashMap<&str,&str> = [("ben","auditor"),("brett","auditor"),("root","admin"),
+	("noah","admin"),("will","dev"),("rohit","dev"),("david","dev")].iter().cloned().collect();
 	        
 	match users.get(name) {
 		Some(&"dev")  => {
@@ -87,7 +149,7 @@ fn gen_ssl_cert(name: &str,home: &str) -> Result<(), Error> {
 
 
 fn gen_key(name: &str, home: &str) -> PKey<Private> {
-	let first_arg = format!("{}/.certs/employee-{}.key", home, name);
+	let first_arg = format!("{}/.certs/Citizen Hex/employee-{}.key", home, name);
 	let mut f = File::create(&first_arg).unwrap();
 	let rsa = Rsa::generate(4096).unwrap();
 	let privkey = PKey::from_rsa(rsa).unwrap();
@@ -195,5 +257,6 @@ fn main() {
 	setup_home(home).unwrap();
 	get_ca_from_s3(home).unwrap();
 	gen_ssl_cert(name, home).unwrap();
-//	set_kubernetes_context(noah, home, kuberntes_cluster_url)?;
+	setup_kubernetes_context(name, home);
+	secondary_kube_setup(name, home);
 }
